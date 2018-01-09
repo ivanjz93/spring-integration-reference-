@@ -141,5 +141,170 @@ _从版本4.0开始，引入了@EnableIntegration注解，以允许注册Spring 
 
 * 如果组件是一个InitializingBean或者使用@PostConstruct方法，不要从这些初始化方法发送消息——当这些方法被调用时，应用上下文还没有被初始化，并且发送这样的消息可能会失败。如果您需要在启动过程中发送消息，请实现ApplicationListener并等待ContextRefreshedEvent。或者，实现SmartLifecycle，把你的bean放到后期，然后从start\(\)方法发送消息。
 
+# 3.7 编程技巧和窍门
+
+在使用XML配置时，为了避免出现错误的模式验证错误，可以使用“Spring感知的”IDE，例如Spring Tool Suite（STS）（或使用Spring插件的eclipse）或IntelliJ IDEA。这些IDE知道如何从类路径中解析正确的XML模式（使用jar中的META-INF / spring.schemas文件）。在使用STS或带有插件的eclipse时，一定要在项目上启用Spring Project Nature。
+
+在互联网上托管的某些传统模块（版本1.0中存在的模块）的模式是1.0版本兼容的；如果您的IDE使用这些模式，您可能会看到不正确的错误信息。
+
+这些在线模式中的每一个都有类似的警告：
+
+_这个模式适用于Spring Integration Core的1.0版本。我们无法将其更新到当前模式，因为这会破坏任何使用1.0.3或更低版本的应用程序。对于后续版本，未版本化的模式从类路径中解析并从jar中获得。请参阅github：https://github.com/spring-projects/spring-integration/tree/master/spring-integration-core/src/main/resources/org/springframework/integration/config。_
+
+受影响的模块有：
+
+* core（spring-integration.xsd）；
+* file;
+* http;
+* jms;
+* mail;
+* rmi;
+* security;
+* stream;
+* ws;
+* xml。
+
+## 3.7.2 为Java和DSL配置查找类名
+
+借助XML配置和Spring Integration命名空间支持，XML解析器隐藏了如何声明和连接目标bean。对于Java和注解配置，了解目标最终用户应用程序的框架API非常重要。
+
+EIP实现的头等公民是消息、通道和端点（参见上文第3.3节“主要组件”）。他们的实现（合同）是：
+
+* org.springframework.messaging.Message——参阅5.1节“消息”；
+* org.springframework.messaging.MessageChannel——参阅4.1节“消息通道”；
+* org.springframework.integration.endpoint.AbstractEndpoint——参阅4.2节“轮询”。
+
+前两个很简单，分别了解如何实现，配置和使用足够了；最后一个值得更多的检查。
+
+AbstractEndpoint在整个框架中广泛用于不同的组件实现；其主要实现是：
+
+* EventDrivenConsumer，当订阅SubscribableChannel来监听消息；
+* PollingConsumer，当从PollableChannel轮询消息。
+
+使用消息注解和/或Java DSL，不应该担心这些组件，因为框架通过适当的注解和BeanPostProcessor自动生成它们。在手动构建组件时，应使用ConsumerEndpointFactoryBean来帮助根据所提供的inputChannel属性确定要创建的目标AbstractEndpoint消费者实现。
+
+另一方面，ConsumerEndpointFactoryBean在框架中委托给另一个一类公民——org.springframework.messaging.MessageHandler。这个接口实现的目标是处理被通道中终端消费的消息。 Spring Integration中的所有EIP组件都是MessageHandler的实现，例如。 AggregatingMessageHandler，MessageTransformingHandler，AbstractMessageSplitter等；并且目标协议出站适配器也是实现，例如， FileWritingMessageHandler，HttpRequestExecutingMessageHandler，AbstractMqttMessageHandler等。当您使用Java和注解配置开发Spring Integration应用程序时，您应该查看Spring Integration模块以找到适用于@ServiceActivator配置的MessageHandler实现。例如，要发送一个XMPP消息（见第38章，XMPP支持），我们应该配置如下所示：
+
+```
+@Bean
+@ServiceActivator(inputChannel = "input")
+public MessageHandler sendChatMessageHandler(XMPPConnection xmppConnection) {
+    ChatMessageSendingMessageHandler handler = new ChatMessageSendingMessageHandler(xmppConnection);
+
+    DefaultXmppHeaderMapper xmppHeaderMapper = new DefaultXmppHeaderMapper();
+    xmppHeaderMapper.setRequestHeaderNames("*");
+    handler.setHeaderMapper(xmppHeaderMapper);
+
+    return handler;
+}
+```
+
+MessageHandler实现代表消息流的出站和处理部分。
+
+入站消息流侧有自己的组件，分为轮询和监听行为。监听（消息驱动）组件很简单并且通常只需要一个目标类实现就可以生成消息。 Listening组件可以是单向的MessageProducerSupport实现，例如AbstractMqttMessageDrivenChannelAdapter和ImapIdleChannelAdapter；也可以是请求回复 - MessagingGatewaySupport实现，例如AmqpInboundGateway和AbstractWebServiceInboundGateway。
+
+轮询入站端点适用于那些不提供监听器API或不适用于此类行为的协议。例如，任何基于文件的协议，FTP，任何数据库（RDBMS或NoSQL）等。
+
+这些入站端点包含两个组件：轮询器配置，定期启动轮询任务以及消息源类，以从目标协议读取数据，并为下游集成流程生成消息。轮询器配置的第一个类是SourcePollingChannelAdapter。这是另外一个AbstractEndpoint实现，特定用于轮询来启动一个集成流程。通常，使用Messaging Annotations或Java DSL，不必担心这个类，框架会根据@InboundChannelAdapter配置或Java DSL Builder规范为其生成一个bean。
+
+消息源组件对于目标应用程序开发更为重要，它们都实现了MessageSource接口，例如MongoDbMessageSource和AbstractTwitterMessageSource。考虑到这一点，我们用JDBC从RDBMS表读取数据的配置可能如下所示：
+
+```
+@Bean
+@InboundChannelAdapter(value = "fooChannel", poller = @Poller(fixedDelay="5000"))
+public MessageSource<?> storedProc(DataSource dataSource) {
+    return new JdbcPollingChannelAdapter(dataSource, "SELECT * FROM foo where status = 0");
+}
+```
+
+目标协议的所有入站和出站类都可以在特定的Spring Integration模块中找到，大多数情况下在相应的包中。例如spring-integration-websocket适配器是：
+
+* o.s.i.websocket.inbound.WebSocketInboundChannelAdapter —— 实现MessageProducerSupport，在套接字上侦听帧并产生消息到通道;
+
+* o.s.i.websocket.outbound.WebSocketOutboundMessageHandler  - 单向AbstractMessageHandler实现，将传入的消息转换为适当的帧并通过websocket发送。
+
+如果熟悉Spring Integration XML配置，从版本4.3开始，可以在XSD元素定义中提供有关哪些目标类用于为适配器或网关声明bean的信息，例如：
+
+```
+<xsd:element name="outbound-async-gateway">
+    <xsd:annotation>
+		<xsd:documentation>
+Configures a Consumer Endpoint for the 'o.s.i.amqp.outbound.AsyncAmqpOutboundGateway'
+that will publish an AMQP Message to the provided Exchange and expect a reply Message.
+The sending thread returns immediately; the reply is sent asynchronously; uses 'AsyncRabbitTemplate.sendAndReceive()'.
+       </xsd:documentation>
+	</xsd:annotation>
+```
+
+# 3.8 POJO方法调用
+
+如在3.6节“编程注意事项”中所述，推荐使用POJO编程风格。例如
+
+```
+@ServiceActivator
+public String myService(String payload) { ... }
+```
+
+在这种情况下，框架将提取一个String有效载荷，调用方法，并将结果包装在一个消息中发送给流中的下一个组件（原始头将被复制到新消息中）。实际上，如果你使用XML配置，你甚至不需要@ServiceActivator注解：
+
+```
+<int:service-activator ... ref="myPojo" method="myService" />
+```
+
+```
+public String myService(String payload) { ... }
+```
+
+只要在类的公共方法中没有歧义，就可以省略方法属性。
+
+进一步信息：
+
+可以POJO方法中获取头信息：
+
+```
+@ServiceActivator
+public String myService(@Payload String payload, @Header("foo") String fooHeader) { ... }
+```
+
+可以提取消息中的属性：
+
+```
+@ServiceActivator
+public String myService(@Payload("payload.foo") String foo, @Header("bar.baz") String barbaz) { ... }
+```
+
+由于有许多不同的POJO方法调用可用，5.0之前的版本使用SpEL来调用POJO方法。与通常在方法中进行的实际工作相比，SpEL（甚至被解释）对于这些操作通常“足够快”。但是，从版本5.0开始，默认情况下会使用org.springframework.messaging.handler.invocation.InvocableHandlerMethod。这种技术通常比解释的SpEL更快执行，并且与其他Spring消息传递项目一致。 InvocableHandlerMethod类似于用于在Spring MVC中调用控制器方法的技术。有一些方法仍然总是使用SpEL调用；例子包括具有如上所述的解除引用属性的注释参数。这是因为SpEL有能力导航属性路径。
+
+可能有一些我们还没有考虑到的其他角落案例也不能使用InvocableHandlerMethod。出于这个原因，在这些情况下，我们会自动回退到使用SpEL。
+
+如果愿意，也可以使用UseSpelInvoker注解设置你的POJO方法，使其始终使用SpEL：
+
+```
+@UseSpelInvoker(compilerMode = "IMMEDIATE")
+public void bar(String bar) { ... }
+```
+
+如果省略了compilerMode属性，则spring.expression.compiler.mode系统属性将确定编译器模式 - 有关编译的SpEL的更多信息，请参阅SpEL编译。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
