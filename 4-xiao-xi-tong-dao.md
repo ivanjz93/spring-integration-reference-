@@ -93,5 +93,5 @@ _由于DirectChannel是最简单的选择，并且不会增加调度和管理轮
 
 DirectChannel内部代理一个Message Dispatcher来调用它的订阅消息处理器，并且这个dispatcher可以通过load-balancer或load-balancer-ref属性持有负载均衡策略。负载均衡策略被Message Dispatcher用于在又多个Message处理器订阅相同通道的情况下帮助决定Message如果分发给Message处理器。load-balancer属性引用了LoadBalancingStrategy的预定义的实现值的枚举。round-robin（在处理程序中进行负载平衡）和none（想要显式的关闭负载均衡）是仅有的可用值。其它策略实现可能在未来的版本中添加。但是，从版本3.0开始，可以提供自定义的LoadBalancingStrategy实现，并使用load-balancer-ref属性注入它，该属性应该指向实现LoadBalancingStrategy的bean。
 
-
+test
 
