@@ -100,41 +100,46 @@ _消息源可以是可轮询的（例如POP3）或消息驱动的（例如，IMA
 
 ![](https://docs.spring.io/spring-integration/docs/5.0.0.RELEASE/reference/html/images/target-endpoint.jpg)
 
-_如上面的消息通道所述，通道可以是可以轮询的或可订阅的；在该图中，由“时钟”符号和实线箭头（轮询）以及虚线箭头（订阅）来描绘。_  
+_如上面的消息通道所述，通道可以是可以轮询的或可订阅的；在该图中，由“时钟”符号和实线箭头（轮询）以及虚线箭头（订阅）来描绘。_
 
+# 3.5 配置和@EnableIntegration
 
+在本文档中，将看到在Spring Integration流程中声明元素的XML名称空间支持的引用。这种支持是由一系列命名空间解析器提供的，它们生成适当的bean定义来实现特定的组件。例如，许多端点由一个MessageHandler bean和一个ConsumerEndpointFactoryBean组成，处理程序和输入通道名称被注入其中。
 
+首次遇到Spring Integration命名空间元素时，框架会自动声明一些用于支持运行时环境（任务调度器，隐式通道创建器等）的bean。
 
+_从版本4.0开始，引入了@EnableIntegration注解，以允许注册Spring Integration基础设施bean（请参阅JavaDocs）。仅当使用Java＆注解配置时，这个注解是必需的；例如，使用Spring Boot和/或Spring集成消息注解支持和Spring集成的Java DSL的无XML集成配置。_
 
+当有一个没有Spring集成组件和两个或更多使用Spring集成的子上下文的父上下文时，@EnableIntegration注解也很有用。它使这些通用组件只在父上下文中声明一次。
 
+@EnableIntegration注解将许多基础结构组件注册到应用程序上下文中：
 
+* 注册一些内建的bean，例如errorChannel及其LoggingHandler、轮询器的taskScheduler、jsonPath SpEL函数等；
+* 添加了几个BeanFactoryPostProcessor来增强用于全局和默认集成环境的BeanFactory；
 
+* 添加几个BeanPostProcessor来增强和转换和包装特定的bean，以便集成;
 
+* 添加注解处理器来解析消息注解，并为应用程序上下文注册它们的组件。
 
+@IntegrationComponentScan注解也被引入来允许类路径扫描。这个注解和标准的Spring Framework @ComponentScan注解有着相似的作用，但是它仅限于Spring Integration特定的组件和注解，这是标准的Spring Framework组件扫描机制无法实现的。例如，第8.4.6节“@MessagingGateway注释”。
 
+已引入@EnablePublisher注解用来注册PublisherAnnotationBeanPostProcessor bean，并为那些没有channel属性的@Publisher注解配置default-publisher-channel。如果找到多个@EnablePublisher注解，则它们必须都具有相同的默认通道值。有关更多信息，请参见第B.1.1节“通过@Publisher注解进行注解驱动的方法”。
 
+引入了@GlobalChannelInterceptor注解来标记用于全局信道拦截的ChannelInterceptor bean。这个注解是&lt;int：channel-interceptor&gt; xml元素的一个模拟（参见“全局通道拦截器配置”一节）。 @GlobalChannelInterceptor注解可以放置在类级别（带有@Component构造型注解）或@Configuration类中的@Bean方法上。无论哪种情况，这个bean都必须是一个ChannelInterceptor。
 
+已引入的@IntegrationConverter注解，将Converter，GenericConverter或ConverterFactory bean标记为integrationConversionService的候选转换器。这个注解是&lt;int：converter&gt; xml元素的模拟（参见第8.1.6节“有效载荷类型转换”）。可以将@IntegrationConverter注解放在类级别（使用@Component构造型标注）或@Configuration类中的@Bean方法。
 
+有关消息注解的更多信息，另请参见第E.6节“注释支持”。
 
+# 3.6 编程注意事项
 
+通常建议尽可能使用普通的Java对象（PO​​JO），并且仅在绝对必要时代码中暴露框架。有关更多信息，请参见第3.8节“POJO方法调用”。
 
+如果将框架暴露给类，则需要考虑一些注意事项，特别是在应用程序启动过程中；其中一些在这里列出。
 
+* 如果组件是ApplicationContextAware，通常不应该在setApplicationContext（）方法中使用ApplicationContext。仅存储一个引用，并将这些用法推迟到上下文生命周期的后期
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-  
-
+* 如果组件是一个InitializingBean或者使用@PostConstruct方法，不要从这些初始化方法发送消息——当这些方法被调用时，应用上下文还没有被初始化，并且发送这样的消息可能会失败。如果您需要在启动过程中发送消息，请实现ApplicationListener并等待ContextRefreshedEvent。或者，实现SmartLifecycle，把你的bean放到后期，然后从start\(\)方法发送消息。
 
 
 
