@@ -93,5 +93,113 @@ _由于DirectChannel是最简单的选择，并且不会增加调度和管理轮
 
 DirectChannel内部代理一个Message Dispatcher来调用它的订阅消息处理器，并且这个dispatcher可以通过load-balancer或load-balancer-ref属性持有负载均衡策略。负载均衡策略被Message Dispatcher用于在又多个Message处理器订阅相同通道的情况下帮助决定Message如果分发给Message处理器。load-balancer属性引用了LoadBalancingStrategy的预定义的实现值的枚举。round-robin（在处理程序中进行负载平衡）和none（想要显式的关闭负载均衡）是仅有的可用值。其它策略实现可能在未来的版本中添加。但是，从版本3.0开始，可以提供自定义的LoadBalancingStrategy实现，并使用load-balancer-ref属性注入它，该属性应该指向实现LoadBalancingStrategy的bean。
 
-test
+```
+<int:channel id="lbRefChannel">
+    <int:dispatcher load-balancer-ref="lib"/>
+</int:channel>
+
+<bean id="lb" class="foo.bar.SampleLoadBalancingStrategy"/>
+```
+
+注意，load-balancer或load-balancer-ref属性是互斥的。
+
+负载均衡也与布尔属性failover一起工作。如果failover值为true（默认的），那么当前面的处理器抛出异常时，dispatcher会根据需要回退到任何后续处理程序。顺序由一个可选的order值确定，它定义在处理器本身；如果没有这个值，就由它们订阅的顺序决定。
+
+如果某种情况需要一个dispatcher总是尝试调用第一个处理器，那么每次发生错误时都要以相同的固定顺序进行回退，所以不会提供负载均衡策略。换句话说，dispatcher也支持failover属性甚至当没有开启负载均衡时。但是，如果没有负载均衡，处理器的调用将始终按照它们的顺序从第一个开始。例如，如果对第一、第二、第三等有明确的定义，这个方法行得通。当使用命名空间支持，任何端点上的order属性会决定顺序。
+
+_记住，负载均衡和failover属性仅当一个通道有多个订阅的消息处理器时应用。当使用命名空间支持，这意味着多个端点在input-channel属性中共享相同的通道引用。_
+
+### ExecutorChannel
+
+ExecutorChannel是支持与DirectChannel相同dispatcher配置的（负载均衡策略和failover布尔属性）点对点通道。两种分发通道类型的关键区别是ExecutorChannel代理一个TaskExecutor的实例来执行分发。这意味着第二个方法一般不会阻塞，但是这意味着处理器调用可能不会发生在发送者的线程中。因此它不支持跨发送者和接收处理器的事务。
+
+_注意，有些场景下发送者可能会阻塞。例如，当使用TaskExecutor的情况下，拒绝策略会在客户端上进行限制（例如ThreadPoolExecutor.CallerRunsPolicy），发送线程会在线程池处于最大容量并且执行者的工作队列已满时直接执行该方法。由于这种情况只会以不可预测的方式发生，显然不能依赖事务。_
+
+### Scoped Channel
+
+Spring  Integration 1.0提供一个ThreadLocalChannel实现，但是从2.0开始被移除了。现在有一个更通用的方法来处理相同的需求——通过向通道添加一个scope属性。属性值可以是上下文中可用的任何范围名称。例如，在web环境中，某些范围可用，并且任何自定义范围实现都可以在上下文中注册。下面是一个基于ThreadLocal的范围应用于通道的例子，包括范围本身的注册。
+
+```
+<int:channel id="threadScopedChannel" scope="thread">
+    <int:queue/>
+</int:channel>
+
+<bean class="org.springframework.beans.factory.config.CustomScopeConfigurer">
+    <property name="scopes">
+        <map>
+            <entry key="thread" value="org.springframework.context.support.SimpleThreadScope"/>
+        </map>
+    </property>
+</bean>
+```
+
+上面的通道内部也代理一个队列，但是通道被绑定到当前线程，也包括队列的内容。这样发送到通道的线程稍后将能够接收那些相同的消息，但是没有其它线程能够访问它们。尽管很少需要线程范围通道，但在使用DirectChannel来强制单线程操作而需要任何回复消息发送到终端通道的情况下，它们可能很有用。如果该终端通道是线程范围的，则原始发送线程可以从其收集回复。
+
+现在，由于任何通道都可以被限定范围，所以除了Thread Local以外，还可以定义自己的范围。
+
+## 4.1.3 通道拦截器
+
+消息架构的一个优点是可以以非侵入的方式提供一致的行为并聚焦传递给系统的消息的有意义的信息。因为消息从MessageChannel发送和接收，这些通道提供了拦截发送和接收操作的机会。ChannelInterceptor策略接口为下面的每个操作提供方法：
+
+```
+public interface ChannelInterceptor {
+    
+    Message<?> preSend(Message<?> message, MessageChannel channel);
+    
+    void postSend(Message<?> message, MessageChannel channel, boolean sent);
+    
+    void afterSendCompletion(Message<?> message, MessageChannel channel, boolean sent, Exception ex);
+    
+    boolean preReceive(MessageChannel channel);
+    
+    Message<?> postReceive(Message<?> message, MessageChannel channel);
+    
+    void afterReceiveCompletion(Message<?> message, MessageChannel channel, Exception ex);
+}
+```
+
+在实现接口之后，调用函数即可注册拦截器：
+
+```
+channel.addInterceptor(someChannelInterceptor);
+```
+
+返回Message实例的方法可用于转换Message，或者可以返回null以防止进一步处理（当然，任何方法都可以抛出RuntimeException）。同时，preReceive方法可以返回false来阻止接收的进一步操作。
+
+_记住，receive\(\)调用仅与PollableChannel相关。事实上SubscribableChannel接口甚至不定义receive\(\)方法。这是因为当一个消息被发送到一个SubscribableChannel时，它将被直接发送给一个或多个订阅者，这取决于通道的类型（例如，PublishSubscribeChannel发送给所有订阅者）。因此，只有在拦截器应用于 PollableChannel时，才会调用preReceive\(..\)、postReceive\(..\)和afterReceiveCompletion\(..\)拦截器方法。_
+
+Spring Integration也提供了Wire Tap模式的实现。它是一个简单的拦截器，将消息发送到另一个通道，而不会改变现有的流程。它对于调试和监测非常有用。“Wire Tap“一节展示例子。
+
+由于很少需要实现所有的拦截器方法，所以一个ChannelInterceptorAdapter类也可以用于被扩展。它提供了没有操作的方法（void方法是空的，返回Message的方法返回Message本身，返回boolean的方法返回true）。因此，很易于扩展这个类并实现所需的方法。
+
+```
+public class CountingChannelInterceptor extends ChannelInterceptorAdapter {
+    
+    private final AtomicInteger sendCount = new AtomicInteger();
+    
+    @Override
+    public Message<?> preSend(Message<?> message, MessageChannel channel) {
+        sendCount.incrementAndGet();
+        return message;
+    }
+}
+```
+
+_拦截器方法的调用顺序取决于通道。如上所述，基于队列的通道是仅有的接收方法首先拦截的。此外，发送拦截和接收拦截的关系取决于单独的发送者和接受者线程的时间。例如，如果接受者在等待消息时已经阻塞，那么顺序可以是preSend、preReceive、postReceive和postSend。但是如果发送者已经发送消息并返回之后接受者轮询，则顺序是：preSend、postSend、preReceive和postReceive。在这种情况下，时间取决于很多因此，因此通常是不可预测的（事实上，接收可能从不发生）。显然，队列的类型也扮演了重要的角色（例如rendezvous和proirty）。底线是不能超出preSend先于postSend和preReceive先于postReceive的事实。_
+
+从Spring Framework 4.1和Spring Integration 4.1开始，ChannelInterceptor提供新的方法——afterSendCompletion\(\)和afterReceiveCompletion\(\)。它们在send\(\)/receive\(\)调用之后，不管是否有异常抛出，因此可用于资源清理。注意，通道按照出事preSend\(\)/preReceive\(\)调用的相反顺序在ChannelInterceptor列表上调用这些方法。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
